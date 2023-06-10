@@ -7,40 +7,57 @@ class RWLock(object):
     """
     非公平读写锁
     """
+    _FREE = 0
+    _READ = 1
+    _WRITE = 2
 
     def __init__(self):
-        self._lock = threading.Lock()
-        self._extra = threading.Lock()
+        self._state = self._FREE
+        self._cond = threading.Condition()
         self.read_num = 0
 
-    def _acquire(self, block: bool, timeout: float) -> bool:
-        if block:
-            return self._lock.acquire(blocking=True, timeout=timeout)
-        else:
-            return self._lock.acquire(blocking=False)
-
     def read_acquire(self, block: bool = True, timeout: float = -1) -> bool:
-        ret = True
-        with self._extra:
-            if self.read_num == 0:
-                ret = self._acquire(block, timeout)
-            if ret:
-                self.read_num += 1
-        return ret
+        while True:
+            with self._cond:
+                if self._state == self._FREE:
+                    self._state = self._READ
+                    self.read_num = 1
+                    return True
+                elif self._state == self._READ:
+                    self.read_num += 1
+                    return True
+                elif not block:
+                    return False
+                elif timeout >= 0:
+                    block = False
+                self._cond.wait(timeout=timeout)
 
     def read_release(self):
-        with self._extra:
-            if self.read_num <= 0:
+        with self._cond:
+            if self._state != self._READ:
                 raise ToolkitException("Read lock not acquired!")
+
             self.read_num -= 1
             if self.read_num == 0:
-                self._lock.release()
+                self._state = self._FREE
+                self._cond.notify()
 
     def write_acquire(self, block: bool = True, timeout: float = -1) -> bool:
-        return self._acquire(block, timeout)
+        while True:
+            with self._cond:
+                if self._state == self._FREE:
+                    self._state = self._WRITE
+                    return True
+                elif not block:
+                    return False
+                elif timeout >= 0:
+                    block = False
+                self._cond.wait(timeout=timeout)
 
     def write_release(self):
-        with self._extra:
-            if self.read_num > 0:
+        with self._cond:
+            if self._state != self._WRITE:
                 raise ToolkitException("Write lock not acquired!")
-            self._lock.release()
+
+            self._state = self._FREE
+            self._cond.notify()
